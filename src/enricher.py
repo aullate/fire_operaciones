@@ -23,9 +23,10 @@ EXCHANGE_SUFFIXES = [
     ".ST",   # Suecia — Nasdaq Stockholm
     ".OL",   # Noruega — Oslo Børs
     ".CO",   # Dinamarca — Nasdaq Copenhagen
+    ".HK",   # Hong Kong — HKEX
 ]
 
-MAX_WORKERS = 8
+MAX_WORKERS = 3
 
 
 def _is_valid(info: dict) -> bool:
@@ -132,56 +133,56 @@ def run_enrich(log=print) -> tuple[int, int]:
     log(f"  Tickers únicos en llm_operaciones : {total}")
     log("")
 
-    results: list[tuple | None] = [None] * total
     futures_map = {}
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        for i, ticker in enumerate(tickers):
+        for ticker in tickers:
             fut = pool.submit(resolve_ticker, ticker)
-            futures_map[fut] = (i, ticker)
+            futures_map[fut] = ticker
 
+        enriched = 0
+        done = 0
         for fut in as_completed(futures_map):
-            i, ticker = futures_map[fut]
-            results[i] = (ticker, fut.result())
+            ticker = futures_map[fut]
+            result = fut.result()
+            done += 1
 
-    enriched = 0
-    for i, (ticker, result) in enumerate(results, 1):
-        if result is None:
-            log(f"  [{i:>3}/{total}] {ticker:<12}  ✗ no encontrado")
-            continue
+            if result is None:
+                log(f"  [{done:>3}/{total}] {ticker:<12}  ✗ no encontrado")
+                continue
 
-        ticker_yf, info = result
-        price = info.get("currentPrice") or info.get("regularMarketPrice")
-        con.execute(
-            """
-            INSERT INTO market_data (ticker, ticker_yf, long_name, sector, industry, country, exchange, current_price, currency)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (ticker) DO UPDATE SET
-                ticker_yf     = excluded.ticker_yf,
-                long_name     = excluded.long_name,
-                sector        = excluded.sector,
-                industry      = excluded.industry,
-                country       = excluded.country,
-                exchange      = excluded.exchange,
-                current_price = excluded.current_price,
-                currency      = excluded.currency,
-                updated_at    = now()
-            """,
-            [
-                ticker,
-                ticker_yf,
-                info.get("longName"),
-                info.get("sector"),
-                info.get("industry"),
-                info.get("country"),
-                info.get("exchange"),
-                price,
-                info.get("currency"),
-            ],
-        )
-        suffix_str = f" ({ticker_yf})" if ticker_yf != ticker else ""
-        log(f"  [{i:>3}/{total}] {ticker:<12}{suffix_str:<12}  {info.get('longName', '')[:40]}")
-        enriched += 1
+            ticker_yf, info = result
+            price = info.get("currentPrice") or info.get("regularMarketPrice")
+            con.execute(
+                """
+                INSERT INTO market_data (ticker, ticker_yf, long_name, sector, industry, country, exchange, current_price, currency)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (ticker) DO UPDATE SET
+                    ticker_yf     = excluded.ticker_yf,
+                    long_name     = excluded.long_name,
+                    sector        = excluded.sector,
+                    industry      = excluded.industry,
+                    country       = excluded.country,
+                    exchange      = excluded.exchange,
+                    current_price = excluded.current_price,
+                    currency      = excluded.currency,
+                    updated_at    = now()
+                """,
+                [
+                    ticker,
+                    ticker_yf,
+                    info.get("longName"),
+                    info.get("sector"),
+                    info.get("industry"),
+                    info.get("country"),
+                    info.get("exchange"),
+                    price,
+                    info.get("currency"),
+                ],
+            )
+            suffix_str = f" ({ticker_yf})" if ticker_yf != ticker else ""
+            log(f"  [{done:>3}/{total}] {ticker:<12}{suffix_str:<12}  {info.get('longName', '')[:40]}")
+            enriched += 1
 
     log("")
     fetch_historical_prices(con, log)

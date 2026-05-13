@@ -28,4 +28,4 @@ except Exception:
     st.warning("No hay datos aún. Ejecuta `uv run fire run` primero.")
     st.stop()
 
-st.dataframe(df, use_container_width=True)
+st.dataframe(df, width='stretch')

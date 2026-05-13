@@ -11,9 +11,43 @@ def run(
     full: bool = typer.Option(False, "--full", help="Borra el histórico DuckDB y reprocesa todo desde cero"),
     poll: int = typer.Option(300, "--poll", help="Segundos entre comprobaciones del estado del batch"),
 ):
-    """Procesa operaciones.txt (incremental o completo) vía Anthropic Batch API y lanza el dashboard."""
+    """Pipeline completo: LLM → yfinance → dashboard."""
+    from src.enricher import run_enrich
+
     mode = "completo" if full else "incremental"
     typer.echo(f"\n── fire run [{mode}] [batch-api] ─────────────────────────")
+
+    msgs_processed, ops_added, fallbacks, errors = pipeline_run_async(full=full, log=typer.echo, poll_s=poll)
+
+    if msgs_processed == 0:
+        typer.echo("  No hay mensajes nuevos.")
+    else:
+        typer.echo(f"── Resumen LLM ────────────────────────────────────────")
+        typer.echo(f"  Mensajes procesados      : {msgs_processed}")
+        typer.echo(f"  Operaciones guardadas    : {ops_added}")
+        if fallbacks:
+            typer.echo(f"  Fallbacks (desalineados) : {fallbacks}")
+        if errors:
+            typer.echo(f"  Errores                  : {errors}")
+
+    typer.echo("\n── fire yfinance ───────────────────────────────────────")
+    total, enriched = run_enrich(log=typer.echo)
+    typer.echo(f"  Tickers unicos   : {total}")
+    typer.echo(f"  Enriquecidos     : {enriched}")
+    typer.echo(f"  Sin datos        : {total - enriched}")
+
+    typer.echo("\nArrancando dashboard...")
+    subprocess.run([sys.executable, "-m", "streamlit", "run", "src/app/main.py"], check=True)
+
+
+@app.command()
+def llm(
+    full: bool = typer.Option(False, "--full", help="Borra el histórico DuckDB y reprocesa todo desde cero"),
+    poll: int = typer.Option(300, "--poll", help="Segundos entre comprobaciones del estado del batch"),
+):
+    """Solo extracción LLM (sin yfinance ni dashboard)."""
+    mode = "completo" if full else "incremental"
+    typer.echo(f"\n── fire llm [{mode}] [batch-api] ─────────────────────────")
 
     msgs_processed, ops_added, fallbacks, errors = pipeline_run_async(full=full, log=typer.echo, poll_s=poll)
 
@@ -27,9 +61,6 @@ def run(
             typer.echo(f"  Fallbacks (desalineados) : {fallbacks}")
         if errors:
             typer.echo(f"  Errores                  : {errors}")
-
-    typer.echo("\nArrancando dashboard...")
-    subprocess.run([sys.executable, "-m", "streamlit", "run", "src/app/main.py"], check=True)
 
 
 @app.command()
@@ -75,10 +106,10 @@ def status():
 
 
 @app.command()
-def enrich():
-    """Enriquece los tickers de llm_operaciones con datos de mercado (yfinance)."""
+def yfinance():
+    """Descarga datos de mercado para los tickers de llm_operaciones vía yfinance."""
     from src.enricher import run_enrich
-    typer.echo("\n-- fire enrich ---------------------------------------------")
+    typer.echo("\n── fire yfinance ───────────────────────────────────────")
     total, enriched = run_enrich(log=typer.echo)
     typer.echo("")
     typer.echo("-- Resumen -------------------------------------------------")

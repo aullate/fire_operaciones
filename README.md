@@ -37,10 +37,11 @@ cp .env.example .env
 
 | Comando | Descripción |
 |---|---|
-| `uv run fire run` | Procesa mensajes nuevos (incremental) vía Batch API y lanza el dashboard |
+| `uv run fire run` | Pipeline completo: LLM → yfinance → dashboard (incremental) |
 | `uv run fire run --full` | Borra el histórico y reprocesa todo desde cero |
 | `uv run fire run --poll 60` | Check de estado del batch cada 60s (default: 300s) |
-| `uv run fire enrich` | Enriquece los tickers con datos de mercado vía yfinance |
+| `uv run fire llm` | Solo extracción LLM (sin yfinance ni dashboard) |
+| `uv run fire yfinance` | Solo descarga de datos de mercado vía yfinance |
 | `uv run fire status` | Estado local (DuckDB, mensajes pendientes) + verificación de API key |
 | `uv run fire app` | Lanza el dashboard sin reprocesar |
 
@@ -69,7 +70,7 @@ fire_operaciones/
 │   └── operaciones.duckdb   # Base de datos local
 ├── tests/
 │   └── dummy_data.txt   # Datos de prueba sintéticos
-├── cli.py               # CLI: fire run [--full] | fire status | fire app
+├── cli.py               # CLI: fire run | fire llm | fire yfinance | fire status | fire app
 └── pyproject.toml
 ```
 
