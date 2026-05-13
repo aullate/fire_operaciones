@@ -95,6 +95,23 @@ def _ensure_tables(con: duckdb.DuckDBPyConnection) -> None:
     con.execute("COMMENT ON COLUMN market_data.current_price  IS 'Precio de mercado en el momento del enriquecimiento'")
     con.execute("COMMENT ON COLUMN market_data.currency       IS 'Divisa del precio (yfinance)'")
     con.execute("COMMENT ON COLUMN market_data.updated_at     IS 'Última vez que se actualizaron estos datos'")
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS historical_prices (
+            ticker      VARCHAR      NOT NULL,
+            ticker_yf   VARCHAR      NOT NULL,
+            trade_date  DATE         NOT NULL,
+            close_price DOUBLE,
+            currency    VARCHAR,
+            updated_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+            PRIMARY KEY (ticker, trade_date)
+        )
+    """)
+    con.execute("COMMENT ON COLUMN historical_prices.ticker      IS 'Ticker tal como aparece en llm_operaciones'")
+    con.execute("COMMENT ON COLUMN historical_prices.ticker_yf   IS 'Ticker resuelto con sufijo de exchange (ej. AENA.MC)'")
+    con.execute("COMMENT ON COLUMN historical_prices.trade_date  IS 'Fecha de la operación (DATE de llm_mensajes.fecha)'")
+    con.execute("COMMENT ON COLUMN historical_prices.close_price IS 'Precio de cierre ajustado en la fecha de la operación (yfinance)'")
+    con.execute("COMMENT ON COLUMN historical_prices.currency    IS 'Divisa del precio (yfinance)'")
+    con.execute("COMMENT ON COLUMN historical_prices.updated_at  IS 'Última vez que se actualizaron estos datos'")
 
 
 def _get_last_fecha(con: duckdb.DuckDBPyConnection) -> datetime:

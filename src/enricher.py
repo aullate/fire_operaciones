@@ -1,3 +1,4 @@
+from datetime import timedelta
 from pathlib import Path
 import duckdb
 import yfinance as yf
@@ -38,6 +39,61 @@ def resolve_ticker(ticker: str) -> tuple[str, dict] | None:
         except Exception:
             continue
     return None
+
+
+def fetch_historical_prices(con: duckdb.DuckDBPyConnection, log=print) -> tuple[int, int]:
+    """Fetch close prices for unique (ticker, trade_date) pairs not yet in historical_prices."""
+    pairs = con.execute("""
+        SELECT DISTINCT
+            o.ticker,
+            md.ticker_yf,
+            CAST(m.fecha AS DATE) AS trade_date
+        FROM llm_operaciones o
+        JOIN llm_mensajes m ON o.mensaje_id = m.id
+        JOIN market_data md ON o.ticker = md.ticker
+        WHERE o.ticker IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM historical_prices hp
+              WHERE hp.ticker = o.ticker
+                AND hp.trade_date = CAST(m.fecha AS DATE)
+          )
+        ORDER BY o.ticker, trade_date
+    """).fetchall()
+
+    total = len(pairs)
+    log(f"  Precios históricos: {total} pares únicos (ticker, fecha) pendientes")
+
+    fetched = 0
+    for i, (ticker, ticker_yf, trade_date) in enumerate(pairs, 1):
+        try:
+            df = yf.Ticker(ticker_yf).history(
+                start=trade_date,
+                end=trade_date + timedelta(days=1),
+                auto_adjust=True,
+            )
+            close_price = float(df["Close"].iloc[0]) if not df.empty else None
+            currency = yf.Ticker(ticker_yf).info.get("currency") if not df.empty else None
+        except Exception:
+            close_price = None
+            currency = None
+
+        con.execute(
+            """
+            INSERT INTO historical_prices (ticker, ticker_yf, trade_date, close_price, currency)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (ticker, trade_date) DO UPDATE SET
+                ticker_yf   = excluded.ticker_yf,
+                close_price = excluded.close_price,
+                currency    = excluded.currency,
+                updated_at  = now()
+            """,
+            [ticker, ticker_yf, trade_date, close_price, currency],
+        )
+        status = f"{close_price:.4f} {currency}" if close_price is not None else "sin datos (festivo/finde)"
+        log(f"  [{i:>3}/{total}] {ticker:<12} {str(trade_date):<12}  {status}")
+        fetched += 1
+
+    return total, fetched
 
 
 def run_enrich(log=print) -> tuple[int, int]:
@@ -93,6 +149,9 @@ def run_enrich(log=print) -> tuple[int, int]:
         suffix_str = f" ({ticker_yf})" if ticker_yf != ticker else ""
         log(f"  [{i:>3}/{total}] {ticker:<12}{suffix_str:<12}  {info.get('longName', '')[:40]}")
         enriched += 1
+
+    log("")
+    fetch_historical_prices(con, log)
 
     con.close()
     return total, enriched
