@@ -1,7 +1,10 @@
 from datetime import timedelta
+import logging
 from pathlib import Path
 import duckdb
 import yfinance as yf
+
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 from src.pipeline import DB_PATH, _ensure_tables
 
