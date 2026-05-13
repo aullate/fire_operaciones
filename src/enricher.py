@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import timedelta
 import logging
 from pathlib import Path
@@ -24,6 +25,8 @@ EXCHANGE_SUFFIXES = [
     ".CO",   # Dinamarca — Nasdaq Copenhagen
 ]
 
+MAX_WORKERS = 8
+
 
 def _is_valid(info: dict) -> bool:
     price = info.get("currentPrice") or info.get("regularMarketPrice")
@@ -44,13 +47,28 @@ def resolve_ticker(ticker: str) -> tuple[str, dict] | None:
     return None
 
 
+def _fetch_one_history(ticker: str, ticker_yf: str, trade_date, currency: str | None) -> tuple:
+    """Fetch close price for a single (ticker_yf, trade_date). Returns (ticker, ticker_yf, trade_date, close_price, currency)."""
+    try:
+        df = yf.Ticker(ticker_yf).history(
+            start=trade_date,
+            end=trade_date + timedelta(days=1),
+            auto_adjust=True,
+        )
+        close_price = float(df["Close"].iloc[0]) if not df.empty else None
+    except Exception:
+        close_price = None
+    return (ticker, ticker_yf, trade_date, close_price, currency)
+
+
 def fetch_historical_prices(con: duckdb.DuckDBPyConnection, log=print) -> tuple[int, int]:
     """Fetch close prices for unique (ticker, trade_date) pairs not yet in historical_prices."""
     pairs = con.execute("""
         SELECT DISTINCT
             o.ticker,
             md.ticker_yf,
-            CAST(m.fecha AS DATE) AS trade_date
+            CAST(m.fecha AS DATE) AS trade_date,
+            md.currency
         FROM llm_operaciones o
         JOIN llm_mensajes m ON o.mensaje_id = m.id
         JOIN market_data md ON o.ticker = md.ticker
@@ -65,21 +83,22 @@ def fetch_historical_prices(con: duckdb.DuckDBPyConnection, log=print) -> tuple[
 
     total = len(pairs)
     log(f"  Precios históricos: {total} pares únicos (ticker, fecha) pendientes")
+    if total == 0:
+        return 0, 0
+
+    results: list[tuple] = [None] * total
+    futures_map = {}
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        for i, (ticker, ticker_yf, trade_date, currency) in enumerate(pairs):
+            fut = pool.submit(_fetch_one_history, ticker, ticker_yf, trade_date, currency)
+            futures_map[fut] = i
+
+        for fut in as_completed(futures_map):
+            results[futures_map[fut]] = fut.result()
 
     fetched = 0
-    for i, (ticker, ticker_yf, trade_date) in enumerate(pairs, 1):
-        try:
-            df = yf.Ticker(ticker_yf).history(
-                start=trade_date,
-                end=trade_date + timedelta(days=1),
-                auto_adjust=True,
-            )
-            close_price = float(df["Close"].iloc[0]) if not df.empty else None
-            currency = yf.Ticker(ticker_yf).info.get("currency") if not df.empty else None
-        except Exception:
-            close_price = None
-            currency = None
-
+    for i, (ticker, ticker_yf, trade_date, close_price, currency) in enumerate(results, 1):
         con.execute(
             """
             INSERT INTO historical_prices (ticker, ticker_yf, trade_date, close_price, currency)
@@ -113,9 +132,20 @@ def run_enrich(log=print) -> tuple[int, int]:
     log(f"  Tickers únicos en llm_operaciones : {total}")
     log("")
 
+    results: list[tuple | None] = [None] * total
+    futures_map = {}
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        for i, ticker in enumerate(tickers):
+            fut = pool.submit(resolve_ticker, ticker)
+            futures_map[fut] = (i, ticker)
+
+        for fut in as_completed(futures_map):
+            i, ticker = futures_map[fut]
+            results[i] = (ticker, fut.result())
+
     enriched = 0
-    for i, ticker in enumerate(tickers, 1):
-        result = resolve_ticker(ticker)
+    for i, (ticker, result) in enumerate(results, 1):
         if result is None:
             log(f"  [{i:>3}/{total}] {ticker:<12}  ✗ no encontrado")
             continue
