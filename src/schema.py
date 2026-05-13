@@ -6,7 +6,7 @@ class Operacion(BaseModel):
     es_operacion: bool
     ticker: str | None = None
     nombre_empresa: str | None = None
-    tipo_activo: Literal["accion", "opcion_call", "opcion_put", "opcion", "etf", "fondo", "cripto", "otro"] | None = None
+    tipo_activo: Literal["accion", "opcion_call", "opcion_put", "etf", "cripto", "otro"] | None = None
     accion: Literal["compra", "venta", "ampliacion", "reduccion"] | None = None
     precio: float | None = None
     divisa: str | None = None

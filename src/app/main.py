@@ -18,10 +18,9 @@ try:
             o.tipo_activo,
             o.accion,
             o.precio,
-            o.divisa,
-            o.notas
-        FROM operaciones o
-        JOIN mensajes m ON o.mensaje_id = m.id
+            o.divisa
+        FROM llm_operaciones o
+        JOIN llm_mensajes m ON o.mensaje_id = m.id
         ORDER BY m.fecha DESC
     """).df()
     con.close()

@@ -17,7 +17,16 @@ _SYSTEM_PATTERNS = re.compile(
     r"salió del grupo|"
     r"cambió el (icono|asunto|descripción)|"
     r"Cambió tu código de seguridad|"
-    r"mensajes y las llamadas están cifrados)",
+    r"mensajes y las llamadas están cifrados|"
+    r"<Multimedia omitido>|"
+    r"\b(foto|imagen|v[íi]deo|audio|sticker|GIF|documento|contacto|ubicaci[oó]n)\s+omitid[oa]\b|"
+    r"(Se elimin[oó] este mensaje|Este mensaje fue eliminado|Eliminaste este mensaje)|"
+    r"(Llamada de voz|Videollamada)\s+(perdida|entrante|saliente)|"
+    r"cambi[oó]\s+(al n[uú]mero|su n[uú]mero de tel[eé]fono)|"
+    r"^ENCUESTA:\s|"
+    r"(se uni[oó]|fue a[nñ]adid[oa]) (mediante|a trav[eé]s de) el enlace de invitaci[oó]n|"
+    r"(activ[oó]|desactiv[oó]) la desaparici[oó]n de mensajes|"
+    r"(ahora es|ya no es) administrador)",
     re.IGNORECASE,
 )
 
@@ -40,8 +49,11 @@ def _parse_date(date_str: str, time_str: str) -> datetime:
     raise ValueError(f"Cannot parse date: {date_str} {time_str}")
 
 
+_EDIT_SUFFIX_RE = re.compile(r'\s*<Se edit[oó] este mensaje\.?>', re.IGNORECASE)
+
+
 def _flush(raw_messages: list, date_str: str, time_str: str, user: str, lines: list[str]) -> None:
-    mensaje = "\n".join(lines).strip()
+    mensaje = _EDIT_SUFFIX_RE.sub('', "\n".join(lines)).strip()
     if not mensaje:
         return
     if not user:

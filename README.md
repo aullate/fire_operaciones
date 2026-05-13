@@ -5,19 +5,21 @@ Pipeline ETL que extrae y estructura operaciones de inversión a partir de expor
 ## Qué hace
 
 1. Lee `operaciones.txt` (exportación de WhatsApp) desde la raíz del repo
-2. Extrae metadata (fecha, usuario) con Regex
+2. Extrae metadata (fecha, usuario) con Regex, filtrando mensajes de sistema y ruido de WhatsApp
 3. Usa un LLM (Anthropic + Instructor) para identificar y estructurar operaciones financieras
 4. Almacena el resultado en `data/operaciones.duckdb`
 5. Lanza un dashboard Streamlit para consultar las operaciones
 
 El procesamiento es **incremental**: solo se envían al LLM los mensajes nuevos (posteriores al último registro en DuckDB), ahorrando tokens en cada ejecución.
 
+Las llamadas al LLM usan siempre la **Anthropic Batch API** (50% más barato que la API síncrona).
+
 ## Stack
 
 - **Python 3.11+**
 - **Regex** — extracción de metadata WhatsApp
 - **Instructor + Pydantic** — structured output del LLM
-- **Anthropic API** — modelo de lenguaje para parsear texto libre
+- **Anthropic API (Batch)** — modelo de lenguaje para parsear texto libre
 - **Polars** — transformación de datos
 - **DuckDB** — almacenamiento local analítico
 - **Streamlit** — dashboard de consulta
@@ -35,11 +37,10 @@ cp .env.example .env
 
 | Comando | Descripción |
 |---|---|
-| `uv run fire run` | Procesa mensajes nuevos (incremental) y lanza el dashboard |
+| `uv run fire run` | Procesa mensajes nuevos (incremental) vía Batch API y lanza el dashboard |
 | `uv run fire run --full` | Borra el histórico y reprocesa todo desde cero |
-| `uv run fire run --async` | Usa Anthropic Batch API (50% más barato, puede tardar hasta 24h) |
-| `uv run fire run --async --full` | Batch API + reprocesar todo desde cero |
-| `uv run fire run --async --poll 60` | Batch API con check de estado cada 60s (default: 300s) |
+| `uv run fire run --poll 60` | Check de estado del batch cada 60s (default: 300s) |
+| `uv run fire enrich` | Enriquece los tickers con datos de mercado vía yfinance |
 | `uv run fire status` | Estado local (DuckDB, mensajes pendientes) + verificación de API key |
 | `uv run fire app` | Lanza el dashboard sin reprocesar |
 
@@ -72,6 +73,17 @@ fire_operaciones/
 └── pyproject.toml
 ```
 
+## Esquema DuckDB
+
+Tres tablas con prefijo `llm_`, todas con `inserted_at` para trazabilidad:
+
+| Tabla | Descripción |
+|---|---|
+| `llm_batches` | Auditoría de cada llamada al LLM (batch_id, modelo, n_ops, fallback, error) |
+| `llm_mensajes` | Mensajes procesados (fecha, usuario, texto) |
+| `llm_operaciones` | Operaciones extraídas (ticker, empresa, tipo, acción, precio, divisa) |
+| `market_data` | Datos de mercado por ticker vía yfinance (nombre, sector, país, precio actual) |
+
 ## Formato de entrada
 
 Exportación estándar de WhatsApp:
@@ -89,5 +101,6 @@ Ejemplos válidos:
 
 - Un mensaje puede contener **N operaciones** — siempre se devuelve un array
 - Mensajes no financieros ("Idem 😂", "Bajó un 9%") se descartan (`es_operacion: False`)
-- Mensajes de sistema (cifrado, "añadió a", "creó el grupo") se filtran en el extractor
+- Mensajes de sistema WhatsApp se filtran en el extractor antes de llegar al LLM: cifrado E2E, gestión de grupo, medios omitidos, mensajes eliminados, llamadas, encuestas, cambios de número
 - Teléfonos normalizados: `+34 600 00 00 00` → `+34600000000`
+- `tipo_activo`: `accion` | `opcion_call` | `opcion_put` | `etf` | `cripto` | `otro` (fondos → `otro`)
