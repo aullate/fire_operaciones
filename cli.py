@@ -12,7 +12,7 @@ def run(
     poll: int = typer.Option(300, "--poll", help="Segundos entre comprobaciones del estado del batch"),
 ):
     """Pipeline completo: LLM → yfinance → dashboard."""
-    from src.enricher import run_enrich
+    from src.market import run_market
 
     mode = "completo" if full else "incremental"
     typer.echo(f"\n── fire run [{mode}] [batch-api] ─────────────────────────")
@@ -30,8 +30,8 @@ def run(
         if errors:
             typer.echo(f"  Errores                  : {errors}")
 
-    typer.echo("\n── fire yfinance ───────────────────────────────────────")
-    total, enriched = run_enrich(log=typer.echo)
+    typer.echo("\n── fire market ─────────────────────────────────────────")
+    total, enriched = run_market(log=typer.echo)
     typer.echo(f"  Tickers unicos   : {total}")
     typer.echo(f"  Enriquecidos     : {enriched}")
     typer.echo(f"  Sin datos        : {total - enriched}")
@@ -106,11 +106,11 @@ def status():
 
 
 @app.command()
-def yfinance():
+def market():
     """Descarga datos de mercado para los tickers de llm_operaciones vía yfinance."""
-    from src.enricher import run_enrich
-    typer.echo("\n── fire yfinance ───────────────────────────────────────")
-    total, enriched = run_enrich(log=typer.echo)
+    from src.market import run_market
+    typer.echo("\n── fire market ─────────────────────────────────────────")
+    total, enriched = run_market(log=typer.echo)
     typer.echo("")
     typer.echo("-- Resumen -------------------------------------------------")
     typer.echo(f"  Tickers unicos   : {total}")

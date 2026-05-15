@@ -31,7 +31,7 @@ REGLAS por mensaje:
 4. El campo "accion" indica el tipo de movimiento (compra/venta/ampliacion/reduccion), NO el tipo de activo.
 5. "ampliacion" = añadir más a una posición ya existente ("compro más", "añado", "amplío").
 6. "reduccion" = vender parte de una posición existente.
-7. tipo_activo: usa "accion" para acciones y SOCIMIs/REITs que cotizan individualmente, "etf" para ETFs (incluidos ETFs de REITs), "opcion_call" u "opcion_put" (SIEMPRE especifica el tipo, nunca uses un valor genérico), "cripto" para criptomonedas, "otro" para el resto (fondos de inversión incluidos). Compras de inmuebles físicos (pisos, estudios) NO son operaciones financieras → es_operacion: false.
+7. tipo_activo: usa "accion" para acciones y SOCIMIs/REITs que cotizan individualmente, "etf" para ETFs y fondos de inversión indexados (incluidos ETFs de REITs), "opcion_call" u "opcion_put" (SIEMPRE especifica el tipo, nunca uses un valor genérico), "cripto" para criptomonedas, "otro" para fondos de gestión activa y el resto. NUNCA uses "fondo" como valor — no existe en el schema. Compras de inmuebles físicos (pisos, estudios) NO son operaciones financieras → es_operacion: false.
 8. Divisa: usa "EUR" si el precio tiene € o es un mercado europeo sin símbolo explícito, "USD" si tiene $ o es mercado americano, "GBP" si tiene £.
 9. Limpia el ticker: elimina el prefijo $ (ej. "$VICI" → "VICI").
 10. Si solo hay nombre de empresa sin ticker (ej. "Novo Nordisk"), deja ticker=null y rellena nombre_empresa.

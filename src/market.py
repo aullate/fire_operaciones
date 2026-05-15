@@ -1,8 +1,9 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from datetime import timedelta
 import logging
-from pathlib import Path
+import time
 import duckdb
+import requests
 import yfinance as yf
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
@@ -26,7 +27,25 @@ EXCHANGE_SUFFIXES = [
     ".HK",   # Hong Kong — HKEX
 ]
 
-MAX_WORKERS = 3
+# Stooq usa el mismo sufijo que yfinance para la mayoría de mercados europeos
+STOOQ_SUFFIXES = [
+    ".us",   # US
+    ".mc",   # España
+    ".uk",   # UK
+    ".de",   # Alemania
+    ".f",    # Frankfurt
+    ".pa",   # Francia
+    ".nl",   # Países Bajos
+    ".it",   # Italia
+    ".sw",   # Suiza
+    ".be",   # Bélgica
+    ".se",   # Suecia
+    ".no",   # Noruega
+    ".dk",   # Dinamarca
+]
+
+_RETRY_ATTEMPTS = 3
+_RETRY_BACKOFF = [1, 3, 7]  # segundos entre reintentos
 
 
 def _is_valid(info: dict) -> bool:
@@ -34,32 +53,105 @@ def _is_valid(info: dict) -> bool:
     return price is not None and price > 0
 
 
-def resolve_ticker(ticker: str) -> tuple[str, dict] | None:
-    """Try exchange suffixes until a valid yfinance ticker is found.
-    Returns (resolved_ticker, info) or None."""
-    for suffix in EXCHANGE_SUFFIXES:
-        candidate = ticker + suffix
+def _fetch_info_with_retry(candidate: str) -> dict:
+    """Fetch yfinance info, retrying only on network exceptions (not on empty responses)."""
+    for attempt, wait_s in enumerate(_RETRY_BACKOFF):
         try:
             info = yf.Ticker(candidate).info
-            if _is_valid(info):
-                return candidate, info
+            return info  # empty or not — caller decides validity
+        except Exception:
+            if attempt < _RETRY_ATTEMPTS - 1:
+                time.sleep(wait_s)
+    return {}
+
+
+def _resolve_yfinance(ticker: str) -> tuple[str, dict] | None:
+    """Try yfinance across exchange suffixes."""
+    for suffix in EXCHANGE_SUFFIXES:
+        candidate = ticker + suffix
+        info = _fetch_info_with_retry(candidate)
+        if _is_valid(info):
+            return candidate, info
+    return None
+
+
+def _resolve_stooq(ticker: str) -> tuple[str, dict] | None:
+    """Try Stooq across exchange suffixes via direct HTTP CSV API."""
+    from datetime import date, timedelta as td
+    import io
+    import pandas as pd
+    end = date.today()
+    start = end - td(days=7)
+    start_s, end_s = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+
+    for suffix in STOOQ_SUFFIXES:
+        candidate = (ticker + suffix).lower()
+        try:
+            url = f"https://stooq.com/q/d/l/?s={candidate}&d1={start_s}&d2={end_s}&i=d"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code != 200 or "No data" in resp.text or len(resp.text.strip()) < 30:
+                continue
+            df = pd.read_csv(io.StringIO(resp.text))
+            if df.empty or "Close" not in df.columns:
+                continue
+            price = float(df["Close"].iloc[-1])
+            if price <= 0:
+                continue
+            currency = "USD" if suffix == ".us" else None
+            return candidate, {
+                "currentPrice": price,
+                "currency": currency,
+                "longName": ticker,
+                "source": "stooq",
+            }
         except Exception:
             continue
     return None
 
 
+def resolve_ticker(ticker: str) -> tuple[str, dict] | None:
+    """Query yfinance and Stooq in parallel, return the first valid result."""
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {
+            pool.submit(_resolve_yfinance, ticker): "yfinance",
+            pool.submit(_resolve_stooq, ticker): "stooq",
+        }
+        done, pending = wait(futures, return_when=FIRST_COMPLETED)
+
+        # Check completed futures first
+        for fut in done:
+            result = fut.result()
+            if result is not None:
+                # Cancel pending (best-effort)
+                for p in pending:
+                    p.cancel()
+                return result
+
+        # First completed returned None — wait for the other
+        for fut in as_completed(pending):
+            result = fut.result()
+            if result is not None:
+                return result
+
+    return None
+
+
 def _fetch_one_history(ticker: str, ticker_yf: str, trade_date, currency: str | None) -> tuple:
     """Fetch close price for a single (ticker_yf, trade_date). Returns (ticker, ticker_yf, trade_date, close_price, currency)."""
-    try:
-        df = yf.Ticker(ticker_yf).history(
-            start=trade_date,
-            end=trade_date + timedelta(days=1),
-            auto_adjust=True,
-        )
-        close_price = float(df["Close"].iloc[0]) if not df.empty else None
-    except Exception:
-        close_price = None
-    return (ticker, ticker_yf, trade_date, close_price, currency)
+    for attempt, wait_s in enumerate(_RETRY_BACKOFF):
+        try:
+            df = yf.Ticker(ticker_yf).history(
+                start=trade_date,
+                end=trade_date + timedelta(days=1),
+                auto_adjust=True,
+            )
+            if not df.empty:
+                return (ticker, ticker_yf, trade_date, float(df["Close"].iloc[0]), currency)
+            break  # Empty = festivo/finde, no retry
+        except Exception:
+            if attempt < _RETRY_ATTEMPTS - 1:
+                time.sleep(wait_s)
+    return (ticker, ticker_yf, trade_date, None, currency)
 
 
 def fetch_historical_prices(con: duckdb.DuckDBPyConnection, log=print) -> tuple[int, int]:
@@ -78,6 +170,7 @@ def fetch_historical_prices(con: duckdb.DuckDBPyConnection, log=print) -> tuple[
               SELECT 1 FROM historical_prices hp
               WHERE hp.ticker = o.ticker
                 AND hp.trade_date = CAST(m.fecha AS DATE)
+                AND hp.close_price IS NOT NULL
           )
         ORDER BY o.ticker, trade_date
     """).fetchall()
@@ -87,19 +180,9 @@ def fetch_historical_prices(con: duckdb.DuckDBPyConnection, log=print) -> tuple[
     if total == 0:
         return 0, 0
 
-    results: list[tuple] = [None] * total
-    futures_map = {}
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        for i, (ticker, ticker_yf, trade_date, currency) in enumerate(pairs):
-            fut = pool.submit(_fetch_one_history, ticker, ticker_yf, trade_date, currency)
-            futures_map[fut] = i
-
-        for fut in as_completed(futures_map):
-            results[futures_map[fut]] = fut.result()
-
     fetched = 0
-    for i, (ticker, ticker_yf, trade_date, close_price, currency) in enumerate(results, 1):
+    for i, (ticker, ticker_yf, trade_date, currency) in enumerate(pairs, 1):
+        _, _, _, close_price, currency = _fetch_one_history(ticker, ticker_yf, trade_date, currency)
         con.execute(
             """
             INSERT INTO historical_prices (ticker, ticker_yf, trade_date, close_price, currency)
@@ -119,7 +202,7 @@ def fetch_historical_prices(con: duckdb.DuckDBPyConnection, log=print) -> tuple[
     return total, fetched
 
 
-def run_enrich(log=print) -> tuple[int, int]:
+def run_market(log=print) -> tuple[int, int]:
     con = duckdb.connect(str(DB_PATH))
     _ensure_tables(con)
 
@@ -133,17 +216,12 @@ def run_enrich(log=print) -> tuple[int, int]:
     log(f"  Tickers únicos en llm_operaciones : {total}")
     log("")
 
-    futures_map = {}
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        for ticker in tickers:
-            fut = pool.submit(resolve_ticker, ticker)
-            futures_map[fut] = ticker
-
-        enriched = 0
-        done = 0
-        for fut in as_completed(futures_map):
-            ticker = futures_map[fut]
+    enriched = 0
+    done = 0
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {pool.submit(resolve_ticker, ticker): ticker for ticker in tickers}
+        for fut in as_completed(futures):
+            ticker = futures[fut]
             result = fut.result()
             done += 1
 
